@@ -1,11 +1,23 @@
 import torch.legacy.nn as lnn
+import numpy as np
 
 from keras.models import Model
-import tensorflow as tf
-from keras.layers import *
+from keras.layers import Convolution2D
+from keras.layers import Input
+from keras.layers import ZeroPadding2D
+from keras.layers import Activation
+from keras.layers import BatchNormalization
+from keras.layers import MaxPooling2D
+from keras.layers import Lambda
+from keras.layers import AveragePooling2D
+from keras.layers import Dense
+from keras.layers import Reshape
+from keras.layers import concatenate
 
 from functools import reduce
 from torch.utils.serialization import load_lua
+
+from Torch2KerasConverter.utils import lrn, sqrt, square, mulConstant, l2Normalize
 
 
 class TorchToKeras:
@@ -22,17 +34,27 @@ class TorchToKeras:
 
         slist = self.lua_recursive_source(lnn.Sequential().add(model), isFirst=True)
         s = self.simplify_source(slist)
-        header = '''import keras
-from keras.models import Model
-from keras.layers import *
-import tensorflow as tf
-from keras import backend as K
+        header = '''from keras.models import Model
+from keras.layers import Convolution2D
+from keras.layers import Input
+from keras.layers import ZeroPadding2D
+from keras.layers import Activation
+from keras.layers import BatchNormalization
+from keras.layers import MaxPooling2D
+from keras.layers import Lambda
+from keras.layers import AveragePooling2D
+from keras.layers import Dense
+from keras.layers import Reshape
+from keras.layers import concatenate
+from Torch2KerasConverter.utils import lrn, sqrt, square, mulConstant, l2Normalize
 '''
-        varname = t7_filename.replace('.t7', '').replace('.', '_').replace('-', '_')
-        s = '{}\n\n{}\n{} = Model(inputs=[inp], outputs=x)\n{}.summary()\n'.format(header, s[:], varname, varname)
 
         if outputname is None:
-            outputname = varname
+            outputname = t7_filename
+
+        varname = outputname.replace('.t7', '').replace('.', '_').replace('-', '_')
+        s = '{}\n\n{}\n{} = Model(inputs=[inp], outputs=x)\n{}.summary()\n'.format(header, s[:], varname, varname)
+
         with open(outputname + '.py', "w") as pyfile:
             pyfile.write(s)
 
@@ -91,17 +113,19 @@ from keras import backend as K
                     prev = layers
                 layers = MaxPooling2D(pool_size=(m.kW, m.kH), strides=(m.dW, m.dH))(prev)
             elif name == 'SpatialCrossMapLRN':
-                layers = Lambda(lambda a: tf.nn.lrn(a, depth_radius=m.size, alpha=m.alpha, beta=m.beta))(prev)
+                layers = Lambda(lrn, arguments={'size': m.size,
+                                                     'alpha': m.alpha,
+                                                     'beta': m.beta})(prev)
             elif name == 'SpatialLPPooling':
                 layers = self.lua_recursive_model(m, prev, isFirst=isFirst)
             elif name == 'Square':
-                layers = Lambda(lambda a: a**2)(prev)
+                layers = Lambda(square)(prev)
             elif name == 'SpatialAveragePooling':
                 layers = AveragePooling2D(pool_size=(m.kW, m.kH), strides=(m.dW, m.dH))(prev)
             elif name == 'MulConstant':
-                layers = Lambda(lambda a: a * m.constant_scalar)(prev)
+                layers = Lambda(mulConstant, arguments={'const': m.constant_scalar})(prev)
             elif name == 'Sqrt':
-                layers = Lambda(lambda a: K.sqrt(a))(prev)
+                layers = Lambda(sqrt)(prev)
             elif name == 'Reshape' or name == 'View':
                 shape = tuple()
                 for size in m.size:
@@ -112,7 +136,7 @@ from keras import backend as K
                 bias = m.bias.numpy()
                 layers = Dense(m.output.shape[0], weights=[weights, bias])(prev)
             elif name == 'Normalize':
-                layers = Lambda(lambda a: K.l2_normalize(a, axis=len(m.output.shape)))(prev)
+                layers = Lambda(l2Normalize, arguments={'axis': len(m.output.shape)})(prev)
             elif name == 'DepthConcat':
                 concat_layers = []
 
@@ -180,22 +204,24 @@ from keras import backend as K
                 s += ['{} = MaxPooling2D(pool_size=({}, {}), strides=({}, {}))({})'.format(xv, m.kW, m.kH, m.dW, m.dH,
                                                                                            prev)]
             elif name == 'SpatialCrossMapLRN':
-                s += ["{} = Lambda(lambda a: tf.nn.lrn(a, depth_radius={}, alpha={}, beta={}))({})".format(xv,
-                                                                                                           m.size,
-                                                                                                           m.alpha,
-                                                                                                           m.beta,
-                                                                                                           prev)]
+                s += ["{} = Lambda(lrn, arguments={{'size': {}, 'alpha': {}, 'beta': {}}})({})".format(xv,
+                                                                                                       m.size,
+                                                                                                       m.alpha,
+                                                                                                       m.beta,
+                                                                                                       prev)]
             elif name == 'SpatialLPPooling':
                 s += self.lua_recursive_source(m, xv=xv, prev=prev, isFirst=isFirst)
             elif name == 'Square':
-                s += ['{} = Lambda(lambda a: a**2)({})'.format(xv, prev)]
+                s += ['{} = Lambda(square)({})'.format(xv, prev)]
             elif name == 'SpatialAveragePooling':
                 s += ['{} = AveragePooling2D(pool_size=({}, {}), strides=({}, {}))({})'.format(xv, m.kW, m.kH, m.dW,
                                                                                                m.dH, prev)]
             elif name == 'MulConstant':
-                s += ['{} = Lambda(lambda a: a*{})({})'.format(xv, m.constant_scalar, prev)]
+                layers = (prev)
+                s += ["{} = Lambda(mulConstant, arguments={{'const': {}}})({})"
+                          .format(xv, m.constant_scalar, prev)]
             elif name == 'Sqrt':
-                s += ['{} = Lambda(lambda a: K.sqrt(a))({})'.format(xv, prev)]
+                s += ['{} = Lambda(sqrt)({})'.format(xv, prev)]
             elif name == 'Reshape' or name == 'View':
                 shape = ''
                 for size in m.size:
@@ -204,7 +230,7 @@ from keras import backend as K
             elif name == 'Linear':
                 s += ['{} = Dense({})({})'.format(xv, m.output.shape[0], prev)]
             elif name == 'Normalize':
-                s += ['{} = Lambda(lambda a: K.l2_normalize(a, axis={}))({})'.format(xv, len(m.output.shape), prev)]
+                s += ["{} = Lambda(l2Normalize, arguments={{'axis': {}}})({})".format(xv, len(m.output.shape), prev)]
             elif name == 'DepthConcat':
                 layers = ''
                 w = m.outputSize[-2]
