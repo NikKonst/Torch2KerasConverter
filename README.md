@@ -7,10 +7,10 @@ from Torch2KerasConverter.torch_to_keras import TorchToKeras
 
 converter = TorchToKeras((96, 96, 3))
 
-converter.torch_to_keras('nn4.small2.v1.new.t7', 'MindFaceKerasSmall2V1')
+converter.torch_to_keras('nn4.small2.v1.new.t7', 'KerasSmall2V1')
 ...
 ```
-Two file will be created ```MindFaceKerasSmall2V1.py``` ```MindFaceKerasSmall2V1.h5```
+Two file will be created ```KerasSmall2V1.py``` ```KerasSmall2V1.h5```
 
 ## Layers
 Currently the converter works for the following Torch layers.
